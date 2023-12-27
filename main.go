@@ -1,24 +1,39 @@
 package main
 
 import (
-	"fmt"
+	"image"
 	"image/png"
+	"io"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
+	"github.com/hajimehoshi/ebiten/v2/audio"
+	"github.com/hajimehoshi/ebiten/v2/audio/mp3"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	//"github.com/hajimehoshi/ebiten/v2/text/v2"
 )
 
-const ENEMY_MAX = 3
-const SHOT_MAX = 3
+const (
+	ENEMY_MAX           = 3
+	SHOT_MAX            = 3
+	EFFECT_FRAMEOX      = 4
+	EFFECT_FRAMEOY      = 4
+	EFFECT_FRAME_WIDTH  = 340
+	EFFECT_FRAME_HEIGHT = 340
+	EFFECT_FRAME_COUNT  = 9
+	SCORE_OX            = 10
+	SCORE_OY            = 0
+	SCORE_WIDTH         = 32
+	SCORE_HEIGHT        = 64
+)
 
-var runes []rune
-var mousebutton0 bool = false
-var mousebutton1 bool = false
+//var runes []rune
+//var mousebutton0 bool = false
+//var mousebutton1 bool = false
 
 // var posX int = 0
 // var posY int = 0
@@ -65,6 +80,8 @@ type baseData struct {
 	drawHeight  float64
 	shot        [SHOT_MAX]shotData
 	revivalTime time.Time
+	effectImage *ebiten.Image
+	effectCount int
 }
 
 type shotData struct {
@@ -77,9 +94,13 @@ type shotData struct {
 }
 
 type Game struct {
-	my    baseData
-	enemy [ENEMY_MAX]baseData
-	score int
+	my               baseData
+	enemy            [ENEMY_MAX]baseData
+	score            int
+	audioContext     *audio.Context
+	shotSEBytes      []byte
+	explosionSEBytes []byte
+	scoreImage       *ebiten.Image
 }
 
 func NewGame() *Game {
@@ -101,6 +122,8 @@ func (g *Game) Init() {
 		g.my.shot[i].drawImage = imageOpen("./ball11_gold.png")
 		g.my.shot[i].shotFlag = false
 	}
+	g.my.effectImage = imageOpen("./Effect.png")
+	g.my.effectCount = 0
 
 	for i := 0; i < ENEMY_MAX; i++ {
 		g.enemy[i].posx = 150.0 + float64(100.0*i)
@@ -112,14 +135,26 @@ func (g *Game) Init() {
 			g.enemy[i].shot[j].drawImage = imageOpen("./ball01_red.png")
 			g.enemy[i].shot[j].shotFlag = false
 		}
+		g.enemy[i].effectImage = imageOpen("./Effect.png")
+		g.enemy[i].effectCount = 0
 	}
 
 	g.score = 0
+
+	// 音設定
+	g.audioContext = audio.NewContext(44100)
+	g.shotSEBytes, _ = openSE("./shot.mp3")
+	g.explosionSEBytes, _ = openSE("./explosion.mp3")
+
+	// 得点用の画像ロード
+	g.scoreImage = imageOpen("./score.png")
 }
 
 func (g *Game) Update() error {
 	// ゲームオーバーなので何もしないようにする
 	if g.my.isHit {
+		// エフェクトのカウント
+		g.my.effectCount++
 		return nil
 	}
 
@@ -153,6 +188,9 @@ func (g *Game) Update() error {
 				g.my.shot[i].shotFlag = true
 				g.my.shot[i].shotx = g.my.posx + 13.0
 				g.my.shot[i].shoty = g.my.posy + 25.0
+				// 発射音
+				sePlayer := g.audioContext.NewPlayerFromBytes(g.shotSEBytes)
+				sePlayer.Play()
 				break
 			}
 		}
@@ -173,16 +211,16 @@ func (g *Game) Update() error {
 			// 敵の移動（数秒同じ方向、左右ランダム）
 			if enemyDirection == 1 {
 				if g.enemy[i].posx > 0.0 {
-					g.enemy[i].posx -= 5
+					g.enemy[i].posx -= 1
 				}
 			} else if enemyDirection == 2 {
 				if g.enemy[i].posx < 640.0-g.enemy[i].drawWidth {
-					g.enemy[i].posx += 5
+					g.enemy[i].posx += 1
 				}
 			}
-			if enemyDirectionTime+3 < time.Now().Unix() {
-				rand.Seed(time.Now().UnixNano())
+			if enemyDirectionTime+1 < time.Now().Unix() {
 				enemyDirection = rand.Intn(3)
+				enemyDirectionTime = time.Now().Unix()
 			}
 
 			// 敵の弾発射
@@ -204,6 +242,9 @@ func (g *Game) Update() error {
 					isHit(g.my.posx, g.my.posy, g.my.drawWidth, g.my.drawHeight, g.enemy[i].shot[j].shotx, g.enemy[i].shot[j].shoty, g.enemy[i].shot[j].drawWidth, g.enemy[i].shot[j].drawHeight) {
 					// 当たっているので自機消失（ゲームオーバー）
 					g.my.isHit = true
+					// 爆発音
+					sePlayer := g.audioContext.NewPlayerFromBytes(g.explosionSEBytes)
+					sePlayer.Play()
 				}
 
 				// 自機の弾と敵の当たり判定（敵と自機の弾の数が一緒なので同じループで実施）
@@ -212,16 +253,23 @@ func (g *Game) Update() error {
 					g.enemy[i].isHit = true
 					g.score += 100
 					g.my.shot[j].shotFlag = false
-					//g.my.shot[j].shotx = g.my.posx
-					//g.my.shot[j].shoty = g.my.posy
+					g.my.shot[j].shotx = g.my.posx
+					g.my.shot[j].shoty = g.my.posy
 					t := time.Now()
-					g.enemy[i].revivalTime = t.Add(time.Second + 10)
+					// TODO
+					g.enemy[i].revivalTime = t.Add(time.Second + 12000000)
+					// 爆発音
+					sePlayer := g.audioContext.NewPlayerFromBytes(g.explosionSEBytes)
+					sePlayer.Play()
 				}
 			}
 		} else {
-			//時間経ってたら復活
+			// エフェクトのカウント
+			g.enemy[i].effectCount++
+			// 時間経ってたら復活
 			if g.enemy[i].revivalTime.Before(time.Now()) {
 				g.enemy[i].isHit = false
+				g.enemy[i].effectCount = 0
 			}
 		}
 	}
@@ -244,8 +292,26 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	for i := 0; i < ENEMY_MAX; i++ {
 		if g.enemy[i].isHit {
-			// 敵非表示
 			//ebitenutil.DebugPrint(screen, "enemyHit!!!")
+			// 爆発表示
+			if g.enemy[i].effectCount < 54 {
+				op1 := &ebiten.DrawImageOptions{}
+				op1.GeoM.Translate(-float64(EFFECT_FRAME_WIDTH)/2, -float64(EFFECT_FRAME_HEIGHT)/2)
+				g.enemy[i].drawWidth = float64(g.enemy[i].drawImage.Bounds().Dx()) * 0.3
+				g.enemy[i].drawHeight = float64(g.enemy[i].drawImage.Bounds().Dy()) * 0.3
+				op1.GeoM.Translate(g.enemy[i].posx+float64(g.enemy[i].drawWidth/2), g.enemy[i].posy+float64(g.enemy[i].drawHeight/2))
+				rx := (g.enemy[i].effectCount / 6) % EFFECT_FRAME_COUNT
+				sx := EFFECT_FRAMEOX + (rx%3)*EFFECT_FRAME_WIDTH
+				sy := EFFECT_FRAMEOY
+				if g.enemy[i].effectCount >= 18 {
+					sy = EFFECT_FRAMEOX + EFFECT_FRAME_HEIGHT
+				}
+				if g.enemy[i].effectCount >= 36 {
+					sy = EFFECT_FRAMEOY + EFFECT_FRAME_HEIGHT*2
+				}
+				screen.DrawImage(g.enemy[i].effectImage.SubImage(image.Rect(sx, sy, sx+EFFECT_FRAME_WIDTH, sy+EFFECT_FRAME_HEIGHT)).(*ebiten.Image), op1)
+			}
+			// 敵非表示
 			g.enemy[i].drawWidth = 0
 			g.enemy[i].drawHeight = 0
 			for j := 0; j < SHOT_MAX; j++ {
@@ -276,16 +342,53 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		}
 	}
 	// 自機
-	op := &ebiten.DrawImageOptions{}
-	op.GeoM.Scale(0.1, 0.1)
-	op.GeoM.Translate(g.my.posx, g.my.posy)
-	screen.DrawImage(g.my.drawImage, op)
-	g.my.drawWidth = float64(g.my.drawImage.Bounds().Dx()) * 0.1
-	g.my.drawHeight = float64(g.my.drawImage.Bounds().Dy()) * 0.1
+	if !g.my.isHit {
+		op := &ebiten.DrawImageOptions{}
+		op.GeoM.Scale(0.1, 0.1)
+		op.GeoM.Translate(g.my.posx, g.my.posy)
+		screen.DrawImage(g.my.drawImage, op)
+		g.my.drawWidth = float64(g.my.drawImage.Bounds().Dx()) * 0.1
+		g.my.drawHeight = float64(g.my.drawImage.Bounds().Dy()) * 0.1
+	} else {
+		// 爆発表示
+		if g.my.effectCount < 54 {
+			op1 := &ebiten.DrawImageOptions{}
+			op1.GeoM.Translate(-float64(EFFECT_FRAME_WIDTH)/2, -float64(EFFECT_FRAME_HEIGHT)/2)
+			op1.GeoM.Translate(g.my.posx+float64(g.my.drawWidth/2), g.my.posy+float64(g.my.drawHeight/2))
+			rx := (g.my.effectCount / 6) % EFFECT_FRAME_COUNT
+			sx := EFFECT_FRAMEOX + (rx%3)*EFFECT_FRAME_WIDTH
+			sy := EFFECT_FRAMEOY
+			if g.my.effectCount >= 18 {
+				sy = EFFECT_FRAMEOX + EFFECT_FRAME_HEIGHT
+			}
+			if g.my.effectCount >= 36 {
+				sy = EFFECT_FRAMEOY + EFFECT_FRAME_HEIGHT*2
+			}
+			screen.DrawImage(g.my.effectImage.SubImage(image.Rect(sx, sy, sx+EFFECT_FRAME_WIDTH, sy+EFFECT_FRAME_HEIGHT)).(*ebiten.Image), op1)
+		}
+	}
 
-	ebitenutil.DebugPrint(screen, fmt.Sprintf("score:%d", g.score))
-	if g.my.isHit {
-		ebitenutil.DebugPrint(screen, fmt.Sprintf("GameOver!!!:%d", g.score))
+	/*
+		ebitenutil.DebugPrint(screen, fmt.Sprintf("score:%d", g.score))
+		if g.my.isHit {
+			ebitenutil.DebugPrint(screen, fmt.Sprintf("GameOver!!!:%d", g.score))
+		}
+	*/
+	// スコア表示（桁数分ループしてベース画像から数字を引っ張ってくる）
+	for i := 0; i <= 6; i++ {
+
+		s := getDigits(g.score, i, i)
+
+		op4 := &ebiten.DrawImageOptions{}
+		op4.GeoM.Scale(0.5, 0.5)
+		// スコアの数字から取得位置変える
+		// 桁数から表示位置を変える
+		//op1.GeoM.Translate(-float64(EFFECT_FRAME_WIDTH)/2, -float64(EFFECT_FRAME_HEIGHT)/2)
+		op4.GeoM.Translate(float64(500-(i*32)), 0)
+		sx := SCORE_OX + (s * 32)
+		sy := SCORE_OY
+
+		screen.DrawImage(g.scoreImage.SubImage(image.Rect(sx, sy, sx+SCORE_WIDTH, sy+SCORE_HEIGHT)).(*ebiten.Image), op4)
 	}
 }
 
@@ -336,4 +439,30 @@ func isHit(posx1 float64, posy1 float64, width1 float64, height1 float64, posx2 
 	}
 
 	return true
+}
+
+func openSE(name string) ([]byte, error) {
+	file, err := os.Open(name)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+	src, err2 := mp3.DecodeWithoutResampling(file)
+	if err2 != nil {
+		panic(err2)
+	}
+	return io.ReadAll(src)
+}
+
+func getDigits(value int, start int, end int) int {
+	var mod_value int
+	var result int
+
+	// n桁目以下の桁を取得
+	mod_value = value % int(math.Pow(10, float64(end)+1))
+
+	// m桁目以上の桁を取得
+	result = mod_value / int(math.Pow(10, float64(start)))
+
+	return result
 }
