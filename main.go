@@ -25,7 +25,7 @@ const (
 	EFFECT_FRAME_WIDTH  = 340
 	EFFECT_FRAME_HEIGHT = 340
 	EFFECT_FRAME_COUNT  = 9
-	SCORE_OX            = 10
+	SCORE_OX            = 6
 	SCORE_OY            = 0
 	SCORE_WIDTH         = 32
 	SCORE_HEIGHT        = 64
@@ -376,16 +376,15 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	*/
 	// スコア表示（桁数分ループしてベース画像から数字を引っ張ってくる）
 	for i := 0; i <= 6; i++ {
-
+		// 数字の桁部分から値を取得する
 		s := getDigits(g.score, i, i)
 
-		op4 := &ebiten.DrawImageOptions{}
-		op4.GeoM.Scale(0.5, 0.5)
 		// スコアの数字から取得位置変える
 		// 桁数から表示位置を変える
-		//op1.GeoM.Translate(-float64(EFFECT_FRAME_WIDTH)/2, -float64(EFFECT_FRAME_HEIGHT)/2)
-		op4.GeoM.Translate(float64(500-(i*32)), 0)
-		sx := SCORE_OX + (s * 32)
+		op4 := &ebiten.DrawImageOptions{}
+		op4.GeoM.Scale(0.5, 0.5)
+		op4.GeoM.Translate(float64(600-(i*20)), 0)
+		sx := SCORE_OX + (s * SCORE_WIDTH)
 		sy := SCORE_OY
 
 		screen.DrawImage(g.scoreImage.SubImage(image.Rect(sx, sy, sx+SCORE_WIDTH, sy+SCORE_HEIGHT)).(*ebiten.Image), op4)
